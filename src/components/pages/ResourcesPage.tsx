@@ -22,18 +22,27 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import { Cpu, HardDrive, MemoryStick, Network } from "lucide-react";
+import {
+  Cpu,
+  HardDrive,
+  MemoryStick,
+  Network,
+  AlertTriangle,
+  Download,
+} from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { exportToCsv } from "@/lib/export-csv";
 
 interface Props {
   data: DashboardData;
 }
 
+const THRESHOLDS = { cpu: 80, memory: 85, disk: 90, ports: 80 };
+
 export function ResourcesPage({ data }: Props) {
   const { crashes } = data;
 
-  // Also extract memory info from error reports
   const errorMemory = data.errors.map((e) => ({
     timestamp: e.timestamp,
     rss: e.systemInfo.memory.rss / 1024 / 1024,
@@ -45,7 +54,6 @@ export function ResourcesPage({ data }: Props) {
     source: "error" as const,
   }));
 
-  // Extract memory info from logs
   const logMemory = data.logs
     .filter((l) => l.context?.memory)
     .map((l) => ({
@@ -64,12 +72,8 @@ export function ResourcesPage({ data }: Props) {
       (a, b) =>
         new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
     )
-    .map((m) => ({
-      ...m,
-      date: safeFormat(m.timestamp),
-    }));
+    .map((m) => ({ ...m, date: safeFormat(m.timestamp) }));
 
-  // Chart data for crash resource snapshots
   const crashChartData = crashes.map((c) => ({
     label: safeFormatShort(c.timestamp),
     CPU: c.resourcesAtCrash.cpu.usagePercent,
@@ -80,16 +84,130 @@ export function ResourcesPage({ data }: Props) {
 
   const latest = crashes.length > 0 ? crashes[crashes.length - 1] : null;
 
+  // Compute alerts
+  const alerts: {
+    label: string;
+    value: number;
+    threshold: number;
+    resource: string;
+  }[] = [];
+  if (latest) {
+    const r = latest.resourcesAtCrash;
+    if (r.cpu.usagePercent >= THRESHOLDS.cpu)
+      alerts.push({
+        label: "CPU",
+        value: r.cpu.usagePercent,
+        threshold: THRESHOLDS.cpu,
+        resource: "cpu",
+      });
+    if (r.memory.usagePercent >= THRESHOLDS.memory)
+      alerts.push({
+        label: "Memória",
+        value: r.memory.usagePercent,
+        threshold: THRESHOLDS.memory,
+        resource: "memory",
+      });
+    if (r.disk.usagePercent >= THRESHOLDS.disk)
+      alerts.push({
+        label: "Disco",
+        value: r.disk.usagePercent,
+        threshold: THRESHOLDS.disk,
+        resource: "disk",
+      });
+    if (r.ports.usagePercent >= THRESHOLDS.ports)
+      alerts.push({
+        label: "Portas",
+        value: r.ports.usagePercent,
+        threshold: THRESHOLDS.ports,
+        resource: "ports",
+      });
+  }
+
+  const handleExportMemory = () => {
+    exportToCsv(
+      `recursos-memoria-${new Date().toISOString().slice(0, 10)}.csv`,
+      memoryTimeline.map((m) => ({
+        timestamp: m.timestamp,
+        fonte: m.source,
+        rss_mb: m.rss.toFixed(0),
+        heap_used_mb: m.heapUsed.toFixed(0),
+        heap_total_mb: m.heapTotal.toFixed(0),
+        uptime_h: (m.uptime / 3600).toFixed(1),
+        sessoes_ativas: m.activeSessionsActive || "",
+        sessoes_total: m.activeSessions || "",
+      })),
+    );
+  };
+
+  const handleExportCrashes = () => {
+    exportToCsv(
+      `recursos-crashes-${new Date().toISOString().slice(0, 10)}.csv`,
+      crashes.map((c) => ({
+        timestamp: c.timestamp,
+        tipo: c.crashType,
+        cpu_pct: c.resourcesAtCrash.cpu.usagePercent,
+        cores: c.resourcesAtCrash.cpu.cores,
+        ram_used_gb: (c.resourcesAtCrash.memory.usedMB / 1024).toFixed(1),
+        ram_total_gb: (c.resourcesAtCrash.memory.totalMB / 1024).toFixed(1),
+        disco_pct: c.resourcesAtCrash.disk.usagePercent,
+        portas_used: c.resourcesAtCrash.ports.used,
+        portas_total: c.resourcesAtCrash.ports.total,
+      })),
+    );
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-bold">Recursos do Sistema</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Snapshots de recursos no momento de crashes e erros
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Recursos do Sistema</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Snapshots de recursos no momento de crashes e erros
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={handleExportMemory}
+            disabled={memoryTimeline.length === 0}
+            className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-40"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Memória CSV
+          </button>
+          <button
+            onClick={handleExportCrashes}
+            disabled={crashes.length === 0}
+            className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-40"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Crashes CSV
+          </button>
+        </div>
       </div>
 
-      {/* Current gauges (latest crash) */}
+      {/* Alerts */}
+      {alerts.length > 0 && (
+        <Card className="border-red-500/30">
+          <CardContent className="flex flex-wrap gap-3 p-4">
+            <AlertTriangle className="h-5 w-5 text-red-500 shrink-0" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-red-500">
+                Alertas de Recursos
+              </p>
+              {alerts.map((a) => (
+                <p key={a.resource} className="text-xs text-muted-foreground">
+                  <span className="text-red-500 font-medium">{a.label}</span>{" "}
+                  está em{" "}
+                  <span className="font-bold text-red-500">{a.value}%</span>{" "}
+                  (limite: {a.threshold}%)
+                </p>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Current gauges */}
       {latest && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <ResourceGauge
@@ -97,29 +215,33 @@ export function ResourcesPage({ data }: Props) {
             icon={Cpu}
             value={latest.resourcesAtCrash.cpu.usagePercent}
             detail={`${latest.resourcesAtCrash.cpu.cores} cores`}
+            threshold={THRESHOLDS.cpu}
           />
           <ResourceGauge
             label="Memória"
             icon={MemoryStick}
             value={latest.resourcesAtCrash.memory.usagePercent}
             detail={`${(latest.resourcesAtCrash.memory.usedMB / 1024).toFixed(1)} / ${(latest.resourcesAtCrash.memory.totalMB / 1024).toFixed(1)} GB`}
+            threshold={THRESHOLDS.memory}
           />
           <ResourceGauge
             label="Disco"
             icon={HardDrive}
             value={latest.resourcesAtCrash.disk.usagePercent}
             detail={`${latest.resourcesAtCrash.disk.usedGB.toFixed(1)} / ${latest.resourcesAtCrash.disk.totalGB.toFixed(1)} GB`}
+            threshold={THRESHOLDS.disk}
           />
           <ResourceGauge
             label="Portas"
             icon={Network}
             value={latest.resourcesAtCrash.ports.usagePercent}
             detail={`${latest.resourcesAtCrash.ports.used} / ${latest.resourcesAtCrash.ports.total}`}
+            threshold={THRESHOLDS.ports}
           />
         </div>
       )}
 
-      {/* Resource comparison bar chart */}
+      {/* Bar chart */}
       {crashChartData.length > 0 && (
         <Card>
           <CardHeader>
@@ -130,7 +252,7 @@ export function ResourcesPage({ data }: Props) {
           <CardContent>
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={crashChartData}>
+                <BarChart data={crashChartData} barCategoryGap="30%" barGap={4}>
                   <CartesianGrid
                     strokeDasharray="3 3"
                     className="stroke-muted"
@@ -148,10 +270,30 @@ export function ResourcesPage({ data }: Props) {
                   <Legend
                     formatter={(v) => <span className="text-xs">{v}</span>}
                   />
-                  <Bar dataKey="CPU" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="Memória" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="Disco" fill="#f97316" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="Portas" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                  <Bar
+                    dataKey="CPU"
+                    fill="#3b82f6"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={40}
+                  />
+                  <Bar
+                    dataKey="Disco"
+                    fill="#f97316"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={40}
+                  />
+                  <Bar
+                    dataKey="Memória"
+                    fill="#8b5cf6"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={40}
+                  />
+                  <Bar
+                    dataKey="Portas"
+                    fill="#22c55e"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={40}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -159,7 +301,7 @@ export function ResourcesPage({ data }: Props) {
         </Card>
       )}
 
-      {/* Memory timeline from error reports / logs */}
+      {/* Memory timeline */}
       {memoryTimeline.length > 0 && (
         <Card>
           <CardHeader>
@@ -224,7 +366,7 @@ export function ResourcesPage({ data }: Props) {
         </Card>
       )}
 
-      {/* Crash resource details table */}
+      {/* Crash resource details */}
       {crashes.length > 0 && (
         <Card>
           <CardHeader>
@@ -310,26 +452,39 @@ function ResourceGauge({
   icon: Icon,
   value,
   detail,
+  threshold,
 }: {
   label: string;
   icon: React.ElementType;
   value: number;
   detail: string;
+  threshold: number;
 }) {
+  const overThreshold = value >= threshold;
   return (
-    <Card>
+    <Card className={overThreshold ? "border-red-500/40" : ""}>
       <CardContent className="space-y-3 p-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Icon className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm font-medium">{label}</span>
           </div>
-          <span className={`text-sm font-bold ${getColor(value)}`}>
-            {value}%
-          </span>
+          <div className="flex items-center gap-1">
+            {overThreshold && (
+              <AlertTriangle className="h-3 w-3 text-red-500" />
+            )}
+            <span className={`text-sm font-bold ${getColor(value)}`}>
+              {value}%
+            </span>
+          </div>
         </div>
         <Progress value={value} className="h-2" />
-        <p className="text-xs text-muted-foreground">{detail}</p>
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">{detail}</p>
+          <p className="text-[10px] text-muted-foreground">
+            Limite: {threshold}%
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

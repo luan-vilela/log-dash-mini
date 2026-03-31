@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { DashboardData, LogEntry } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -18,12 +18,20 @@ import {
   ChevronRight,
   FileText,
   SlidersHorizontal,
+  Download,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { exportToCsv } from "@/lib/export-csv";
+import type { NavigateOptions } from "@/components/Dashboard";
 
 interface Props {
   data: DashboardData;
+  initialFilter?: string;
+  onNavigate?: (opts: NavigateOptions) => void;
 }
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -33,9 +41,12 @@ const LEVEL_COLORS: Record<string, string> = {
   ERROR: "text-red-500 border-red-500/30",
 };
 
+type SortKey = "timestamp" | "level" | "category" | "message" | "hostname";
+type SortDir = "asc" | "desc";
+
 const PAGE_SIZE = 50;
 
-export function LogsPage({ data }: Props) {
+export function LogsPage({ data, initialFilter, onNavigate }: Props) {
   const [filter, setFilter] = useState("");
   const [levelFilter, setLevelFilter] = useState<string>("ALL");
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -44,38 +55,38 @@ export function LogsPage({ data }: Props) {
   const [timeunixFilter, setTimeunixFilter] = useState("");
   const [codEmpresaFilter, setCodEmpresaFilter] = useState("");
   const [idSalaFilter, setIdSalaFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("timestamp");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
 
-  // Build a set of session dirNames matching cod_empresa filter
-  const matchingSessionDirs = useMemo(() => {
-    if (!codEmpresaFilter) return null;
-    const q = codEmpresaFilter.trim().toLowerCase();
-    const dirs = new Set<string>();
-    for (const s of data.sessions) {
-      if (s.companyId && s.companyId.toLowerCase().includes(q)) {
-        dirs.add(s.dirName);
-      }
+  useEffect(() => {
+    if (initialFilter) {
+      setFilter(initialFilter);
+      setPage(0);
     }
-    return dirs;
-  }, [data.sessions, codEmpresaFilter]);
+  }, [initialFilter]);
 
-  // Build a set of roomIds matching id_sala filter
-  const matchingRoomIds = useMemo(() => {
-    if (!idSalaFilter) return null;
-    const q = idSalaFilter.trim().toLowerCase();
-    const ids = new Set<string>();
-    for (const c of data.crashes) {
-      if (c.roomId && c.roomId.toLowerCase().includes(q)) ids.add(c.roomId);
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
     }
-    for (const e of data.errors) {
-      if (e.roomId && e.roomId.toLowerCase().includes(q)) ids.add(e.roomId);
-    }
-    for (const s of data.sdpFiles) {
-      if (s.roomId && s.roomId.toLowerCase().includes(q)) ids.add(s.roomId);
-    }
-    return ids;
-  }, [data.crashes, data.errors, data.sdpFiles, idSalaFilter]);
+    setPage(0);
+  };
 
-  // Count by level
+  const SortIcon = ({ col }: { col: SortKey }) => {
+    if (sortKey !== col)
+      return <ArrowUpDown className="ml-1 inline h-3 w-3 opacity-40" />;
+    return sortDir === "asc" ? (
+      <ArrowUp className="ml-1 inline h-3 w-3" />
+    ) : (
+      <ArrowDown className="ml-1 inline h-3 w-3" />
+    );
+  };
+
   const counts = useMemo(() => {
     const c: Record<string, number> = { ALL: data.logs.length };
     for (const log of data.logs) {
@@ -91,60 +102,103 @@ export function LogsPage({ data }: Props) {
     }
     if (filter) {
       const q = filter.toLowerCase();
-      logs = logs.filter((l) => {
-        const full = JSON.stringify(l).toLowerCase();
-        return full.includes(q);
-      });
+      logs = logs.filter((l) => JSON.stringify(l).toLowerCase().includes(q));
     }
     if (timeunixFilter) {
       const q = timeunixFilter.trim();
       logs = logs.filter((l) => {
         const ts = new Date(l.timestamp).getTime();
-        const unixSec = Math.floor(ts / 1000).toString();
-        const unixMs = ts.toString();
-        return unixSec.includes(q) || unixMs.includes(q);
+        return (
+          Math.floor(ts / 1000).toString().includes(q) ||
+          ts.toString().includes(q)
+        );
       });
     }
     if (codEmpresaFilter) {
       const q = codEmpresaFilter.trim().toLowerCase();
-      logs = logs.filter((l) => {
-        const full = JSON.stringify(l).toLowerCase();
-        if (full.includes(q)) return true;
-        // Cross-reference: check if log timestamp falls within any matching session timeframe
-        if (matchingSessionDirs && matchingSessionDirs.size > 0) {
-          return full.includes(q);
-        }
-        return false;
-      });
+      logs = logs.filter((l) => JSON.stringify(l).toLowerCase().includes(q));
     }
     if (idSalaFilter) {
       const q = idSalaFilter.trim().toLowerCase();
-      logs = logs.filter((l) => {
-        const full = JSON.stringify(l).toLowerCase();
-        return full.includes(q);
-      });
+      logs = logs.filter((l) => JSON.stringify(l).toLowerCase().includes(q));
     }
+    if (dateFrom) {
+      const from = new Date(dateFrom).getTime();
+      logs = logs.filter((l) => new Date(l.timestamp).getTime() >= from);
+    }
+    if (dateTo) {
+      const to = new Date(dateTo + "T23:59:59").getTime();
+      logs = logs.filter((l) => new Date(l.timestamp).getTime() <= to);
+    }
+    logs = [...logs].sort((a, b) => {
+      let cmp = 0;
+      switch (sortKey) {
+        case "timestamp":
+          cmp = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+          break;
+        case "level":
+          cmp = a.level.localeCompare(b.level);
+          break;
+        case "category":
+          cmp = a.category.localeCompare(b.category);
+          break;
+        case "message":
+          cmp = a.message.localeCompare(b.message);
+          break;
+        case "hostname":
+          cmp = (a.metadata?.hostname ?? "").localeCompare(b.metadata?.hostname ?? "");
+          break;
+      }
+      return sortDir === "desc" ? -cmp : cmp;
+    });
     return logs;
-  }, [
-    data.logs,
-    levelFilter,
-    filter,
-    timeunixFilter,
-    codEmpresaFilter,
-    idSalaFilter,
-    matchingSessionDirs,
-  ]);
+  }, [data.logs, levelFilter, filter, timeunixFilter, codEmpresaFilter, idSalaFilter, dateFrom, dateTo, sortKey, sortDir]);
+
+  const filteredCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const log of filtered) {
+      c[log.level] = (c[log.level] ?? 0) + 1;
+    }
+    return c;
+  }, [filtered]);
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginated = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+  const handleExport = () => {
+    exportToCsv(
+      `logs-${new Date().toISOString().slice(0, 10)}.csv`,
+      filtered.map((l) => ({
+        timestamp: l.timestamp,
+        level: l.level,
+        category: l.category,
+        message: l.message,
+        hostname: l.metadata?.hostname ?? "",
+        version: l.metadata?.version ?? "",
+        pid: l.context?.pid ?? "",
+        uptime: l.context?.uptime ?? "",
+        env: l.context?.env ?? "",
+      })),
+    );
+  };
+
+  const hasActiveFilters = filter || levelFilter !== "ALL" || timeunixFilter || codEmpresaFilter || idSalaFilter || dateFrom || dateTo;
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-bold">Logs</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {data.logs.length} entradas de log
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Logs</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{data.logs.length} entradas de log</p>
+        </div>
+        <button
+          onClick={handleExport}
+          disabled={filtered.length === 0}
+          className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-40"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Exportar CSV
+        </button>
       </div>
 
       {/* Level filter pills */}
@@ -152,10 +206,7 @@ export function LogsPage({ data }: Props) {
         {["ALL", "STARTUP", "INFO", "WARN", "ERROR"].map((level) => (
           <button
             key={level}
-            onClick={() => {
-              setLevelFilter(level);
-              setPage(0);
-            }}
+            onClick={() => { setLevelFilter(level); setPage(0); }}
             className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
               levelFilter === level
                 ? "bg-primary text-primary-foreground border-primary"
@@ -177,68 +228,47 @@ export function LogsPage({ data }: Props) {
           >
             <SlidersHorizontal className="h-4 w-4" />
             Filtros avançados
-            <ChevronDown
-              className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? "rotate-180" : ""}`}
-            />
+            {hasActiveFilters && <Badge variant="secondary" className="text-[10px] ml-1">Ativo</Badge>}
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? "rotate-180" : ""}`} />
           </button>
         </CardHeader>
         {showAdvanced && (
           <CardContent className="pt-0">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  TimeUnix
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: 1711843200"
-                  value={timeunixFilter}
-                  onChange={(e) => {
-                    setTimeunixFilter(e.target.value);
-                    setPage(0);
-                  }}
-                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono"
-                />
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">TimeUnix</label>
+                <input type="text" placeholder="Ex: 1711843200" value={timeunixFilter}
+                  onChange={(e) => { setTimeunixFilter(e.target.value); setPage(0); }}
+                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Código Empresa
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: 139712"
-                  value={codEmpresaFilter}
-                  onChange={(e) => {
-                    setCodEmpresaFilter(e.target.value);
-                    setPage(0);
-                  }}
-                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono"
-                />
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Código Empresa</label>
+                <input type="text" placeholder="Ex: 139712" value={codEmpresaFilter}
+                  onChange={(e) => { setCodEmpresaFilter(e.target.value); setPage(0); }}
+                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  ID Sala (Room ID)
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: 35896632-97e0-47d3-bbee-baf3ccf6474b"
-                  value={idSalaFilter}
-                  onChange={(e) => {
-                    setIdSalaFilter(e.target.value);
-                    setPage(0);
-                  }}
-                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono"
-                />
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">ID Sala (Room ID)</label>
+                <input type="text" placeholder="Ex: 35896632-97e0..." value={idSalaFilter}
+                  onChange={(e) => { setIdSalaFilter(e.target.value); setPage(0); }}
+                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Data início</label>
+                <input type="date" value={dateFrom}
+                  onChange={(e) => { setDateFrom(e.target.value); setPage(0); }}
+                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Data fim</label>
+                <input type="date" value={dateTo}
+                  onChange={(e) => { setDateTo(e.target.value); setPage(0); }}
+                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none focus:ring-1 focus:ring-ring" />
               </div>
             </div>
-            {(timeunixFilter || codEmpresaFilter || idSalaFilter) && (
+            {(timeunixFilter || codEmpresaFilter || idSalaFilter || dateFrom || dateTo) && (
               <button
-                onClick={() => {
-                  setTimeunixFilter("");
-                  setCodEmpresaFilter("");
-                  setIdSalaFilter("");
-                  setPage(0);
-                }}
+                onClick={() => { setTimeunixFilter(""); setCodEmpresaFilter(""); setIdSalaFilter(""); setDateFrom(""); setDateTo(""); setPage(0); }}
                 className="mt-3 text-xs text-muted-foreground hover:text-foreground underline"
               >
                 Limpar filtros avançados
@@ -247,6 +277,18 @@ export function LogsPage({ data }: Props) {
           </CardContent>
         )}
       </Card>
+
+      {/* Filtered stats summary */}
+      {hasActiveFilters && (
+        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">{filtered.length} resultado(s)</span>
+          {Object.entries(filteredCounts).map(([level, count]) => (
+            <span key={level}>
+              <span className={LEVEL_COLORS[level]?.split(" ")[0] ?? ""}>{level}</span>: {count}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Logs table */}
       <Card>
@@ -258,16 +300,9 @@ export function LogsPage({ data }: Props) {
             </CardTitle>
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Buscar em todos os campos..."
-                value={filter}
-                onChange={(e) => {
-                  setFilter(e.target.value);
-                  setPage(0);
-                }}
-                className="h-8 rounded-md border bg-transparent pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring w-56"
-              />
+              <input type="text" placeholder="Buscar em todos os campos..." value={filter}
+                onChange={(e) => { setFilter(e.target.value); setPage(0); }}
+                className="h-8 rounded-md border bg-transparent pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring w-56" />
             </div>
           </div>
         </CardHeader>
@@ -276,11 +311,11 @@ export function LogsPage({ data }: Props) {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-8"></TableHead>
-                <TableHead>Nível</TableHead>
-                <TableHead>Data/Hora</TableHead>
-                <TableHead>Categoria</TableHead>
-                <TableHead>Mensagem</TableHead>
-                <TableHead>Host</TableHead>
+                <TableHead className="cursor-pointer select-none" onClick={() => handleSort("level")}>Nível <SortIcon col="level" /></TableHead>
+                <TableHead className="cursor-pointer select-none" onClick={() => handleSort("timestamp")}>Data/Hora <SortIcon col="timestamp" /></TableHead>
+                <TableHead className="cursor-pointer select-none" onClick={() => handleSort("category")}>Categoria <SortIcon col="category" /></TableHead>
+                <TableHead className="cursor-pointer select-none" onClick={() => handleSort("message")}>Mensagem <SortIcon col="message" /></TableHead>
+                <TableHead className="cursor-pointer select-none" onClick={() => handleSort("hostname")}>Host <SortIcon col="hostname" /></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -288,43 +323,23 @@ export function LogsPage({ data }: Props) {
                 const globalIdx = page * PAGE_SIZE + i;
                 return (
                   <>
-                    <TableRow
-                      key={globalIdx}
-                      className="cursor-pointer hover:bg-muted/50"
-                      onClick={() =>
-                        setExpanded(expanded === globalIdx ? null : globalIdx)
-                      }
-                    >
+                    <TableRow key={globalIdx} className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => setExpanded(expanded === globalIdx ? null : globalIdx)}>
                       <TableCell>
-                        {expanded === globalIdx ? (
-                          <ChevronDown className="h-3.5 w-3.5" />
-                        ) : (
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        )}
+                        {expanded === globalIdx ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant="outline"
-                          className={`text-[10px] ${LEVEL_COLORS[log.level] ?? ""}`}
-                        >
-                          {log.level}
-                        </Badge>
+                        <Badge variant="outline" className={`text-[10px] ${LEVEL_COLORS[log.level] ?? ""}`}>{log.level}</Badge>
                       </TableCell>
-                      <TableCell className="text-xs whitespace-nowrap">
-                        {safeFormat(log.timestamp)}
-                      </TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">{safeFormat(log.timestamp)}</TableCell>
                       <TableCell className="text-xs">{log.category}</TableCell>
-                      <TableCell className="text-xs max-w-sm truncate">
-                        {log.message}
-                      </TableCell>
-                      <TableCell className="text-xs font-mono">
-                        {log.metadata?.hostname ?? "—"}
-                      </TableCell>
+                      <TableCell className="text-xs max-w-sm truncate">{log.message}</TableCell>
+                      <TableCell className="text-xs font-mono">{log.metadata?.hostname ?? "—"}</TableCell>
                     </TableRow>
                     {expanded === globalIdx && (
                       <TableRow key={`${globalIdx}-detail`}>
                         <TableCell colSpan={6} className="bg-muted/30 p-4">
-                          <LogExpandedDetail log={log} />
+                          <LogExpandedDetail log={log} onNavigate={onNavigate} />
                         </TableCell>
                       </TableRow>
                     )}
@@ -333,12 +348,7 @@ export function LogsPage({ data }: Props) {
               })}
               {paginated.length === 0 && (
                 <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="py-8 text-center text-sm text-muted-foreground"
-                  >
-                    Nenhum log encontrado
-                  </TableCell>
+                  <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">Nenhum log encontrado</TableCell>
                 </TableRow>
               )}
             </TableBody>
@@ -348,25 +358,14 @@ export function LogsPage({ data }: Props) {
           {totalPages > 1 && (
             <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
               <span>
-                Mostrando {page * PAGE_SIZE + 1}–
-                {Math.min((page + 1) * PAGE_SIZE, filtered.length)} de{" "}
-                {filtered.length}
+                Mostrando {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filtered.length)} de {filtered.length}
               </span>
               <div className="flex gap-1">
-                <button
-                  onClick={() => setPage(Math.max(0, page - 1))}
-                  disabled={page === 0}
-                  className="rounded border px-2 py-1 disabled:opacity-40 hover:bg-muted"
-                >
-                  ← Anterior
-                </button>
-                <button
-                  onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
-                  disabled={page >= totalPages - 1}
-                  className="rounded border px-2 py-1 disabled:opacity-40 hover:bg-muted"
-                >
-                  Próximo →
-                </button>
+                <button onClick={() => setPage(0)} disabled={page === 0} className="rounded border px-2 py-1 disabled:opacity-40 hover:bg-muted">««</button>
+                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="rounded border px-2 py-1 disabled:opacity-40 hover:bg-muted">← Anterior</button>
+                <span className="flex items-center px-2">{page + 1} / {totalPages}</span>
+                <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="rounded border px-2 py-1 disabled:opacity-40 hover:bg-muted">Próximo →</button>
+                <button onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1} className="rounded border px-2 py-1 disabled:opacity-40 hover:bg-muted">»»</button>
               </div>
             </div>
           )}
@@ -376,100 +375,48 @@ export function LogsPage({ data }: Props) {
   );
 }
 
-function LogExpandedDetail({ log }: { log: LogEntry }) {
+function LogExpandedDetail({ log, onNavigate }: { log: LogEntry; onNavigate?: (opts: NavigateOptions) => void }) {
   return (
     <div className="space-y-3 text-xs">
-      {/* Context */}
       <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 md:grid-cols-4">
-        {log.context?.nodeVersion && (
-          <KV label="Node" value={log.context.nodeVersion} />
-        )}
-        {log.context?.platform && (
-          <KV label="Platform" value={log.context.platform} />
-        )}
-        {log.context?.pid != null && (
-          <KV label="PID" value={String(log.context.pid)} />
-        )}
-        {log.context?.uptime != null && (
-          <KV
-            label="Uptime"
-            value={`${(log.context.uptime / 3600).toFixed(1)}h`}
-          />
-        )}
+        {log.context?.nodeVersion && <KV label="Node" value={log.context.nodeVersion} />}
+        {log.context?.platform && <KV label="Platform" value={log.context.platform} />}
+        {log.context?.pid != null && <KV label="PID" value={String(log.context.pid)} />}
+        {log.context?.uptime != null && <KV label="Uptime" value={`${(log.context.uptime / 3600).toFixed(1)}h`} />}
         {log.context?.env && <KV label="Env" value={log.context.env} />}
-        {log.context?.timezone && (
-          <KV label="TZ" value={log.context.timezone} />
-        )}
+        {log.context?.timezone && <KV label="TZ" value={log.context.timezone} />}
       </div>
 
-      {/* Memory */}
       {log.context?.memory && (
         <div className="rounded-md border p-2">
           <p className="mb-1 font-medium text-muted-foreground">Memória</p>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 md:grid-cols-5">
-            <KV
-              label="RSS"
-              value={`${(log.context.memory.rss / 1024 / 1024).toFixed(0)} MB`}
-            />
-            <KV
-              label="Heap Used"
-              value={`${(log.context.memory.heapUsed / 1024 / 1024).toFixed(0)} MB`}
-            />
-            <KV
-              label="Heap Total"
-              value={`${(log.context.memory.heapTotal / 1024 / 1024).toFixed(0)} MB`}
-            />
-            <KV
-              label="External"
-              value={`${(log.context.memory.external / 1024 / 1024).toFixed(1)} MB`}
-            />
-            <KV
-              label="Buffers"
-              value={`${(log.context.memory.arrayBuffers / 1024 / 1024).toFixed(1)} MB`}
-            />
+            <KV label="RSS" value={`${(log.context.memory.rss / 1024 / 1024).toFixed(0)} MB`} />
+            <KV label="Heap Used" value={`${(log.context.memory.heapUsed / 1024 / 1024).toFixed(0)} MB`} />
+            <KV label="Heap Total" value={`${(log.context.memory.heapTotal / 1024 / 1024).toFixed(0)} MB`} />
+            <KV label="External" value={`${(log.context.memory.external / 1024 / 1024).toFixed(1)} MB`} />
+            <KV label="Buffers" value={`${(log.context.memory.arrayBuffers / 1024 / 1024).toFixed(1)} MB`} />
           </div>
         </div>
       )}
 
-      {/* Extra context fields */}
       {log.context && (
         <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 md:grid-cols-4">
-          {log.context.processedFiles != null && (
-            <KV
-              label="Arquivos Processados"
-              value={String(log.context.processedFiles)}
-            />
-          )}
-          {log.context.totalSizeMB != null && (
-            <KV label="Tamanho Total" value={`${log.context.totalSizeMB} MB`} />
-          )}
-          {log.context.rotationDays != null && (
-            <KV label="Rotação" value={`${log.context.rotationDays} dias`} />
-          )}
-          {log.context.archivePath && (
-            <KV label="Arquivo" value={log.context.archivePath as string} />
-          )}
+          {log.context.processedFiles != null && <KV label="Arquivos Processados" value={String(log.context.processedFiles)} />}
+          {log.context.totalSizeMB != null && <KV label="Tamanho Total" value={`${log.context.totalSizeMB} MB`} />}
+          {log.context.rotationDays != null && <KV label="Rotação" value={`${log.context.rotationDays} dias`} />}
+          {log.context.archivePath && <KV label="Arquivo" value={log.context.archivePath as string} />}
         </div>
       )}
 
-      {/* Metadata */}
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 md:grid-cols-4 text-muted-foreground">
-        {log.metadata?.version && (
-          <KV label="Versão" value={log.metadata.version} />
-        )}
-        {log.metadata?.localTime && (
-          <KV label="Hora Local" value={log.metadata.localTime} />
-        )}
+        {log.metadata?.version && <KV label="Versão" value={log.metadata.version} />}
+        {log.metadata?.localTime && <KV label="Hora Local" value={log.metadata.localTime} />}
       </div>
 
-      {/* Raw JSON */}
       <details className="group">
-        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-          Ver JSON completo
-        </summary>
-        <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-2 text-[11px] leading-relaxed">
-          {JSON.stringify(log, null, 2)}
-        </pre>
+        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">Ver JSON completo</summary>
+        <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-2 text-[11px] leading-relaxed">{JSON.stringify(log, null, 2)}</pre>
       </details>
     </div>
   );

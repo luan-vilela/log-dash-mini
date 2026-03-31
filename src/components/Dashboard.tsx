@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { DashboardData, DashboardPage } from "@/lib/types";
 import { Sidebar } from "./Sidebar";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -16,17 +16,54 @@ interface Props {
   onReset: () => void;
 }
 
+export interface NavigateOptions {
+  page: DashboardPage;
+  filter?: string;
+}
+
 export function Dashboard({ data, onReset }: Props) {
   const [currentPage, setCurrentPage] = useState<DashboardPage>("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [crossFilter, setCrossFilter] = useState<string | undefined>();
 
-  const pageContent = {
-    overview: <OverviewPage data={data} />,
-    errors: <ErrorsPage data={data} />,
-    sessions: <SessionsPage data={data} />,
+  const navigateTo = useCallback((opts: NavigateOptions) => {
+    setCurrentPage(opts.page);
+    setCrossFilter(opts.filter);
+    setSidebarOpen(false);
+  }, []);
+
+  const handleNavigate = useCallback(
+    (page: DashboardPage) => {
+      navigateTo({ page });
+    },
+    [navigateTo],
+  );
+
+  const pageContent: Record<DashboardPage, React.ReactNode> = {
+    overview: <OverviewPage data={data} onNavigate={navigateTo} />,
+    errors: (
+      <ErrorsPage
+        data={data}
+        initialFilter={crossFilter}
+        onNavigate={navigateTo}
+      />
+    ),
+    sessions: (
+      <SessionsPage
+        data={data}
+        initialFilter={crossFilter}
+        onNavigate={navigateTo}
+      />
+    ),
     resources: <ResourcesPage data={data} />,
-    mediasoup: <MediaSoupPage data={data} />,
-    logs: <LogsPage data={data} />,
+    mediasoup: <MediaSoupPage data={data} onNavigate={navigateTo} />,
+    logs: (
+      <LogsPage
+        data={data}
+        initialFilter={crossFilter}
+        onNavigate={navigateTo}
+      />
+    ),
   };
 
   return (
@@ -48,10 +85,7 @@ export function Dashboard({ data, onReset }: Props) {
         <Sidebar
           data={data}
           currentPage={currentPage}
-          onNavigate={(page) => {
-            setCurrentPage(page);
-            setSidebarOpen(false);
-          }}
+          onNavigate={handleNavigate}
           onReset={onReset}
         />
       </div>

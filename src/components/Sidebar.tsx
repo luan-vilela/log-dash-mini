@@ -1,6 +1,7 @@
 "use client";
 
 import { DashboardData, DashboardPage } from "@/lib/types";
+import { useTheme } from "./ThemeProvider";
 import {
   LayoutDashboard,
   AlertTriangle,
@@ -8,8 +9,9 @@ import {
   Cpu,
   Radio,
   FileText,
-  RotateCcw,
   Upload,
+  Moon,
+  Sun,
 } from "lucide-react";
 
 interface Props {
@@ -34,6 +36,7 @@ const NAV_ITEMS: {
 
 export function Sidebar({ data, currentPage, onNavigate, onReset }: Props) {
   const { summary } = data;
+  const { theme, toggle } = useTheme();
 
   return (
     <aside className="flex h-screen w-56 flex-col border-r bg-card">
@@ -90,7 +93,18 @@ export function Sidebar({ data, currentPage, onNavigate, onReset }: Props) {
       </nav>
 
       {/* Footer */}
-      <div className="border-t px-2 py-2">
+      <div className="border-t px-2 py-2 space-y-0.5">
+        <button
+          onClick={toggle}
+          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          {theme === "dark" ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
+          {theme === "dark" ? "Modo Claro" : "Modo Escuro"}
+        </button>
         <button
           onClick={onReset}
           className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
