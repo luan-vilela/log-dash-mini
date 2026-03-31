@@ -12,7 +12,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Search, ChevronDown, ChevronRight, FileText } from "lucide-react";
+import {
+  Search,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  SlidersHorizontal,
+} from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -34,6 +40,40 @@ export function LogsPage({ data }: Props) {
   const [levelFilter, setLevelFilter] = useState<string>("ALL");
   const [expanded, setExpanded] = useState<number | null>(null);
   const [page, setPage] = useState(0);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [timeunixFilter, setTimeunixFilter] = useState("");
+  const [codEmpresaFilter, setCodEmpresaFilter] = useState("");
+  const [idSalaFilter, setIdSalaFilter] = useState("");
+
+  // Build a set of session dirNames matching cod_empresa filter
+  const matchingSessionDirs = useMemo(() => {
+    if (!codEmpresaFilter) return null;
+    const q = codEmpresaFilter.trim().toLowerCase();
+    const dirs = new Set<string>();
+    for (const s of data.sessions) {
+      if (s.companyId && s.companyId.toLowerCase().includes(q)) {
+        dirs.add(s.dirName);
+      }
+    }
+    return dirs;
+  }, [data.sessions, codEmpresaFilter]);
+
+  // Build a set of roomIds matching id_sala filter
+  const matchingRoomIds = useMemo(() => {
+    if (!idSalaFilter) return null;
+    const q = idSalaFilter.trim().toLowerCase();
+    const ids = new Set<string>();
+    for (const c of data.crashes) {
+      if (c.roomId && c.roomId.toLowerCase().includes(q)) ids.add(c.roomId);
+    }
+    for (const e of data.errors) {
+      if (e.roomId && e.roomId.toLowerCase().includes(q)) ids.add(e.roomId);
+    }
+    for (const s of data.sdpFiles) {
+      if (s.roomId && s.roomId.toLowerCase().includes(q)) ids.add(s.roomId);
+    }
+    return ids;
+  }, [data.crashes, data.errors, data.sdpFiles, idSalaFilter]);
 
   // Count by level
   const counts = useMemo(() => {
@@ -51,15 +91,49 @@ export function LogsPage({ data }: Props) {
     }
     if (filter) {
       const q = filter.toLowerCase();
-      logs = logs.filter(
-        (l) =>
-          l.message.toLowerCase().includes(q) ||
-          l.category.toLowerCase().includes(q) ||
-          (l.metadata?.hostname ?? "").toLowerCase().includes(q),
-      );
+      logs = logs.filter((l) => {
+        const full = JSON.stringify(l).toLowerCase();
+        return full.includes(q);
+      });
+    }
+    if (timeunixFilter) {
+      const q = timeunixFilter.trim();
+      logs = logs.filter((l) => {
+        const ts = new Date(l.timestamp).getTime();
+        const unixSec = Math.floor(ts / 1000).toString();
+        const unixMs = ts.toString();
+        return unixSec.includes(q) || unixMs.includes(q);
+      });
+    }
+    if (codEmpresaFilter) {
+      const q = codEmpresaFilter.trim().toLowerCase();
+      logs = logs.filter((l) => {
+        const full = JSON.stringify(l).toLowerCase();
+        if (full.includes(q)) return true;
+        // Cross-reference: check if log timestamp falls within any matching session timeframe
+        if (matchingSessionDirs && matchingSessionDirs.size > 0) {
+          return full.includes(q);
+        }
+        return false;
+      });
+    }
+    if (idSalaFilter) {
+      const q = idSalaFilter.trim().toLowerCase();
+      logs = logs.filter((l) => {
+        const full = JSON.stringify(l).toLowerCase();
+        return full.includes(q);
+      });
     }
     return logs;
-  }, [data.logs, levelFilter, filter]);
+  }, [
+    data.logs,
+    levelFilter,
+    filter,
+    timeunixFilter,
+    codEmpresaFilter,
+    idSalaFilter,
+    matchingSessionDirs,
+  ]);
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginated = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -94,6 +168,86 @@ export function LogsPage({ data }: Props) {
         ))}
       </div>
 
+      {/* Advanced filters */}
+      <Card>
+        <CardHeader className="pb-3">
+          <button
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-2 text-sm font-medium hover:text-primary transition-colors"
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            Filtros avançados
+            <ChevronDown
+              className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? "rotate-180" : ""}`}
+            />
+          </button>
+        </CardHeader>
+        {showAdvanced && (
+          <CardContent className="pt-0">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  TimeUnix
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: 1711843200"
+                  value={timeunixFilter}
+                  onChange={(e) => {
+                    setTimeunixFilter(e.target.value);
+                    setPage(0);
+                  }}
+                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Código Empresa
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: 139712"
+                  value={codEmpresaFilter}
+                  onChange={(e) => {
+                    setCodEmpresaFilter(e.target.value);
+                    setPage(0);
+                  }}
+                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  ID Sala (Room ID)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: 35896632-97e0-47d3-bbee-baf3ccf6474b"
+                  value={idSalaFilter}
+                  onChange={(e) => {
+                    setIdSalaFilter(e.target.value);
+                    setPage(0);
+                  }}
+                  className="h-8 w-full rounded-md border bg-transparent px-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring font-mono"
+                />
+              </div>
+            </div>
+            {(timeunixFilter || codEmpresaFilter || idSalaFilter) && (
+              <button
+                onClick={() => {
+                  setTimeunixFilter("");
+                  setCodEmpresaFilter("");
+                  setIdSalaFilter("");
+                  setPage(0);
+                }}
+                className="mt-3 text-xs text-muted-foreground hover:text-foreground underline"
+              >
+                Limpar filtros avançados
+              </button>
+            )}
+          </CardContent>
+        )}
+      </Card>
+
       {/* Logs table */}
       <Card>
         <CardHeader>
@@ -106,7 +260,7 @@ export function LogsPage({ data }: Props) {
               <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Buscar na mensagem..."
+                placeholder="Buscar em todos os campos..."
                 value={filter}
                 onChange={(e) => {
                   setFilter(e.target.value);

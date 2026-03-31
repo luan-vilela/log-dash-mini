@@ -34,12 +34,21 @@ export function SessionsPage({ data }: Props) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [filter, setFilter] = useState("");
 
-  const sessions = data.sessions.filter(
-    (s) =>
-      !filter ||
-      s.dirName.toLowerCase().includes(filter.toLowerCase()) ||
-      (s.companyId ?? "").includes(filter),
-  );
+  const sessions = data.sessions.filter((s) => {
+    if (!filter) return true;
+    const q = filter.toLowerCase();
+    return (
+      s.dirName.toLowerCase().includes(q) ||
+      (s.companyId ?? "").toLowerCase().includes(q) ||
+      s.crashReports.some((c) => c.roomId.toLowerCase().includes(q)) ||
+      s.sdpFiles.some((sdp) => sdp.roomId.toLowerCase().includes(q)) ||
+      (s.createdAt
+        ? Math.floor(s.createdAt.getTime() / 1000)
+            .toString()
+            .includes(q)
+        : false)
+    );
+  });
 
   return (
     <div className="space-y-6">
